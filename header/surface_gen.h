@@ -11,12 +11,15 @@
 #include <pcl/common/common.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+#include <pcl/kdtree/kdtree.h>
+
 
 using namespace hierarchicalMap;
 
 class surfaceGen{
     private:
         double r;//radius
+        double q;//the number of neighboring points
 
         void segmentation(sensor_msgs::PointCloud2 cloud);
         void preProcess();
