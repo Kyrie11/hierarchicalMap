@@ -1,3 +1,4 @@
+#include <map>
 #include <iostream>
 #include <algorithm>
 #include <vector>
@@ -20,6 +21,7 @@ class surfaceGen{
     private:
         double r;//radius
         double q;//the number of neighboring points
+        double m;//the number of planes
 
         void segmentation(sensor_msgs::PointCloud2 cloud);
         void preProcess();
