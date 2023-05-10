@@ -19,6 +19,7 @@ using namespace hierarchicalMap;
 
 class surfaceGen{
     private:
+        double cutRadius; //the abstractiojn level of segmentation
         double r;//radius
         double q;//the number of neighboring points
         double m;//the number of planes

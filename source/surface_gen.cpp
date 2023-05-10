@@ -10,13 +10,14 @@ int main(int argc, char** argv)
 
     ros::NodeHandle nh;
     
-    ros::Subscriber pointCloudSub = nh.subscribe("/camera/pointcloud", 10, &)
+    ros::Subscriber pointCloudSub = nh.subscribe("/camera/pointcloud", 10, &this::segmentation);
 }
 
 /*
-*点云分割
+* segement the point cloud to different parts
+* the first step is to segment several point cloud segmentations
 */
-pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::PointCloud2ConstPtr& inCloud, double d)
+pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::PointCloud2ConstPtr& inCloud)
 {
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
     
@@ -30,6 +31,7 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
         std::memcpy(&p.z, &inCloud->data[32*i+8], 4);
         std::memcpy(&p.rgba, &inCloud->data[32*i+16], 4);
         cloud->points.push_back(p);
+        
     }
 
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr filteredCloud;
@@ -37,11 +39,7 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
     filterCloud = subSample(cloud, this.r);
 
     
-    
-
-    
 } 
-
 
 /*
 * 对点云进行降采样，固定分辨率内只有一个点云，并且用一个体素来包裹
@@ -99,13 +97,18 @@ map<int, std::vector<int>> surfaceGen::calcNeighorCloud(pcl::PointCloud<pcl::Poi
 /*
 * multi scale feature detection
 */
-void surfaceGen::featureDet(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud)
+void surfaceGen::featureDet(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr rawCloud, map<int, std::vector<int>> neighborClouds)
 {
      map<int, std::vector<int>> neighborClouds =  calcNeighborCloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
-
+    
     //计算点pi附近q个最近点云
     Eigen::Vector3d surfNormal = surfNormal(neighborCloud, d);
-
+    for(const auto &[iter, clouds] : m){
+        auto p = rawCloud.at(iter);
+        for(auto point:clouds){
+            
+        }
+    }
     std::vector<Eigen::vector3d> planes = new std::vector<Eigen::Vector3d>(this.m); // planes evenly distributed around the normal line
     
 }
@@ -116,9 +119,10 @@ void surfaceGen::featureDet(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud)
 */
 pcl::PointCloud<pcl::Normal>::Ptr surfaceGen::surfNormal(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud)
 {
+
     int size = cloud->size();
     pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
-    normals->resize(size);
+    double normal_x, normal_y, normal_z = 0;
 
     double centerX = 0, centerY = 0, centerZ = 0;
     for(int i=0; i<size; i++)
@@ -177,8 +181,12 @@ pcl::PointCloud<pcl::Normal>::Ptr surfaceGen::surfNormal(pcl::PointCloud<pcl::Po
     for(int i=0; i<size; i++)
     {
         normals->points[i].normal_x = v(0);
-        normals->points[i].
+        normals->points[i].normal_y = v(1);
+        normals->points[i].normal_z = v(2);
+        normals->points[i].curvature = t1 / (val(0, 0) + val(1, 1) + val(2, 2));
     }
+
+    return new pcl::PointCloud<pcl::Normal>(v(0), v(1), v(2));
 }
 
 
@@ -192,3 +200,8 @@ void surfaceGen::initialization()
 
 }
 
+
+void surfaceGen::mergeNURBS()
+{
+
+}
