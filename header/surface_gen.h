@@ -22,8 +22,8 @@ class surfaceGen{
         double cutRadius; //the abstractiojn level of segmentation
         double r;//radius
         double q;//the number of neighboring points
-        double m;//the number of planes
-
+        int numOfPlanes;//the number of surrounding planes
+        double[] ds = {r, 0.72*r, 0.52*r, 0.37*r, 0.27*r, 0.2*r};
         void segmentation(sensor_msgs::PointCloud2 cloud);
         void preProcess();
         void initialization();
