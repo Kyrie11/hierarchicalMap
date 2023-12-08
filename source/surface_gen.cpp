@@ -5,7 +5,7 @@
 #include<vector>
 #include<set>
 
-
+#define DEGREE 3 //曲线阶数
 int main(int argc, char** argv)
 {
     ros::init(argc, argv, "surface_gen");
@@ -31,7 +31,7 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
         pcl::PointXYZRGBA p;
         std::memcpy(&p.x, &inCloud->data[32*i], 4);
         std::memcpy(&p.y, &inCloud->data[32*i+4], 4);
-        std::memcpy(&p.z, &inCloud->data[32*i+8], 4);
+        std::memcpy(&p.z, &inCloud->data[32*i+8], 4);3
         std::memcpy(&p.rgba, &inCloud->data[32*i+16], 4);
         cloud->points.push_back(p);
         
@@ -568,4 +568,77 @@ pcl::PointCloud<pcl::PointXYZRGBA> surfaceGen::regionGrowth(pcl::PointCloud<pcl:
     return curRegion;
 }  
 
+
+//计算样条的基函数
+
+double RationalBasisValue(int order, Eigen::Vector3d u, int start, int end)
+{
+    Eigen::Vector3d uStart = knots[start];
+    Eigen::Vector3d uEnd   = knots[end];
+
+    if(order == 0)
+        if(u<uEnd && u >= uStart)
+            return 1;
+        else 
+            return 0;
+    
+    return (u - uStart)/(knots[start + DEGREE] - uStart) * RationalBasisValue(DEGREE - 1, start, end) + 
+    (knots[start+DEGREE+1] - u)/(knots[start+DEGREE+1] - uEnd) * RationalBasisValue(DEGREE-1, start+1, end+1);
+}
+
+
+void IR_BFS(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud, pcl::PointXYZRGBA targetPoint)
+{
+    std::vector<Eigen::Vector3d> splinePoints;
+
+    
+
+    for(const pcl::PointXYZRGBA& point : cloud->points)
+    {
+        Eigen::Vector3d eigenPoint(point.x, point.y, point.z);
+        splinePoints.push_back(eigenPoint);
+    }
+
+    size_t n = cloud->size();
+    size_t knot_size = n+DEGREE+1;
+    
+    //calculate ubar
+    std::vector<double> ubar(n);
+    ubar[0] = 0;
+    ubar[n-1] = 1;
+    
+
+    std::vector<double> distances(n-1);
+
+    double totalDis = 0;
+    for(int i=0; i<n; i++)
+    {
+        Eigen::Vector3d diff = abs(splinePoints[i+1] - splinePoints[i]);
+        double squaredDistance = diff.squaredNum();
+        double distance = std::sqrt(suqaredDistance);
+        distances[i] = distance;
+
+        totalDis += distance;
+    }
+
+    for(int i=1; i<n-1; i++)
+        ubar[i] = ubar[i-1] + distances[i-1]/totalDis;
+    //calculate bar
+
+
+    /*calculate knot vector U*/
+
+    std::vector<double> U(n+DEGREE+2);//一共n+p+2个点
+    for(int i=0; i<=DEGREE; i++)
+        U[i] = 0;
+    for(int i=1+DEGREE; i<=n; i++)
+        U[i] = 1/DEGREE * std::accumulate(ubar.begin()+i, ubar.begin()+i, ubar.begin()+i+DEGREE-1, 0.0);
+    
+    for(int i=n+1; i<DEGREE+n+1; i++)
+        U[i] = 1;
+
+    /*calculate knot vector U*/
+
+    
+}
 
