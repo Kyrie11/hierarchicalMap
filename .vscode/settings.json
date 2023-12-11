@@ -2,7 +2,11 @@
   "files.associations": {
     "deque": "cpp",
     "string": "cpp",
-    "vector": "cpp"
+    "vector": "cpp",
+    "array": "cpp",
+    "unordered_map": "cpp",
+    "initializer_list": "cpp",
+    "cmath": "cpp"
   },
   "C_Cpp_Runner.msvcBatchPath": "",
   "C_Cpp_Runner.cCompilerPath": "gcc",

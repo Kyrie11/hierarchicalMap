@@ -569,12 +569,14 @@ pcl::PointCloud<pcl::PointXYZRGBA> surfaceGen::regionGrowth(pcl::PointCloud<pcl:
 }  
 
 
-//计算样条的基函数
 
-double RationalBasisValue(int order, Eigen::Vector3d u, int start, int end)
+/*
+ * calculate rational basis function
+ */
+double RationalBasisValue(int order, Eigen::Vector3d u, int index, std::vector<double> knots)
 {
-    Eigen::Vector3d uStart = knots[start];
-    Eigen::Vector3d uEnd   = knots[end];
+    Eigen::Vector3d uStart = knots[index];
+    Eigen::Vector3d uEnd   = knots[index+1];
 
     if(order == 0)
         if(u<uEnd && u >= uStart)
@@ -582,7 +584,7 @@ double RationalBasisValue(int order, Eigen::Vector3d u, int start, int end)
         else 
             return 0;
     
-    return (u - uStart)/(knots[start + DEGREE] - uStart) * RationalBasisValue(DEGREE - 1, start, end) + 
+    return (u - uStart)/(knots[index + DEGREE] - uStart) * RationalBasisValue(DEGREE - 1, index, knots) + 
     (knots[start+DEGREE+1] - u)/(knots[start+DEGREE+1] - uEnd) * RationalBasisValue(DEGREE-1, start+1, end+1);
 }
 
@@ -591,7 +593,6 @@ void IR_BFS(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud, pcl::PointXYZRGBA tar
 {
     std::vector<Eigen::Vector3d> splinePoints;
 
-    
 
     for(const pcl::PointXYZRGBA& point : cloud->points)
     {
@@ -633,11 +634,26 @@ void IR_BFS(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud, pcl::PointXYZRGBA tar
         U[i] = 0;
     for(int i=1+DEGREE; i<=n; i++)
         U[i] = 1/DEGREE * std::accumulate(ubar.begin()+i, ubar.begin()+i, ubar.begin()+i+DEGREE-1, 0.0);
-    
+
     for(int i=n+1; i<DEGREE+n+1; i++)
         U[i] = 1;
-
     /*calculate knot vector U*/
+
+
+    /*Interpolation of NURBS Curves*/
+    std::vector<std::vector<double>> coefficients(n+1, std::vector<double>(n+1, 0.0)); //系数矩阵
+    
+    for(int k=0; k<=n; k++){
+        for(int i=0; i<=n; i++){
+            coefficients[k][i] = RationalBasisValue(DEGREE, ubar[k], )
+        }
+    }
+    /*Interpolation of NURBS Curves*/
+
+
+    /*Inversion Algorithm of NURBS Curves*/
+
+    /*Inversion Algorithm of NURBS Curves*/
 
     
 }
