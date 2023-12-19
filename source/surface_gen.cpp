@@ -1,9 +1,19 @@
 //输入系列点云生成三维b样条曲面
 #include<ros/ros.h>
+#include<sensor_msgs/PointCloud2.h>
+#include<pcl_conversions/pcl_conversions.h>
 #include<pcl/point_cloud.h>
+#include<pcl/point_types.h>
+#include<pcl/filters/voxel_grid.h>
+
 #include<cmath>
 #include<vector>
 #include<set>
+
+#include<Eigen/Eigenvalues>
+
+#define r 1
+#define Q 500 //设定的临近点云数量
 
 #define DEGREE 3 //曲线阶数
 int main(int argc, char** argv)
@@ -16,55 +26,160 @@ int main(int argc, char** argv)
     ros::Subscriber pointCloudSub = nh.subscribe("/camera/pointcloud", 10, &this::segmentation);
 }
 
+struct FeatureResult
+{
+    double curvature;
+    Eigen::Vector2d center;
+    double fitErrorMean;
+    double fitErrorStddev;
+}
+
 /*
 * segement the point cloud to different parts
 * the first step is to segment several point cloud segmentations
 */
 pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::PointCloud2ConstPtr& inCloud)
 {
-    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
-    
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+    pcl::fromROSMsg(*inCLoud, *cloud);
+
+
     // pcl::fromROSMsg(*inCloud, *cloud); 当数据量过大时，这种方式比较耗时
     // 通过直接复制数据地址的方式来进行数据类型转换
-    for(int i=0; i<inCloud->width*inCloud->height; i++)
+    // size_t numPoints = inCloud->width * inCloud->height;
+    // std::memcpy(cloud->points.data(), inCloud->data.data(), inCloud->data.size());
+    // cloud->width = inCloud->width;
+    // cloud->height = inCloud->height;
+
+
+    pcl::VoxelGrid<pcl::PointXYZRGB> voxel_grid;
+    voxel_grid.setInputCloud(cloud);
+    voxel_grid.setLeafSize(0.1 * r, 0.1 * r, 0.1 * r);
+
+    //点云降采样
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr downsampledCloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+    voxel_grid.filter(*downsampledCloud);
+
+    //随机生成一个点
+    pcl::common::UniformGenerator<int> indexGenerator(0, downsampledCloud->size()-1);
+    int randomIndex = indexGenerator.run(0);
+    pcl::PointXYZRGB randomPoint = downsampledCloud->points[randomIndex];
+
+    //计算附近点云组成的平面的法线
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor50 = calcNeighborCloud(downsampledCloud, r, 50, randomPoint);
+    pcl::Normal normal = computePlaneNormal(neighbor50);
+
+
+    std::vector<Eigen::Vector3f> planeNormals;
+    int m = 40;
+
+    float angleInterval = 2 * M_PI / m;
+
+    Eigen::Vector3f orthogonalVec1;
+    if(std::abs(normal.x()) < std::abs(normal.y()))
+        orthogonalVec1 << 0, -normal.z(), normal.y();
+    else
+        orthogonalVec1 << -normal.z(), 0, normal.x();
+    
+    orthogonalVec1.normalize();
+
+    Eigen::Vector3f orthogonalVec2 = normal.cross(orthogonalVec1);
+    orthogonalVec2.normalize();
+
+    Eigen::Matrix3f rotationMatrix;
+    rotationMatrix << normal, orthogonalVec1, orthogonalVec2;
+
+    for(int i=0; i<m; i++)
     {
-        pcl::PointXYZRGBA p;
-        std::memcpy(&p.x, &inCloud->data[32*i], 4);
-        std::memcpy(&p.y, &inCloud->data[32*i+4], 4);
-        std::memcpy(&p.z, &inCloud->data[32*i+8], 4);3
-        std::memcpy(&p.rgba, &inCloud->data[32*i+16], 4);
-        cloud->points.push_back(p);
-        
+        Eigen::Vector3f rotatedNormal = rotationMatrix * normal;
+        rotatedNormal.normalize();
+
+        planeNormals.push_back(rotatedNormal);
+
+        rotationMatrix = Eigen::AngleAxisf(angleInterval, normal) * rotationMatrix;
     }
 
-    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr filteredCloud;
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor500 = calcNeighborCloud(downsampledCloud, r, 50, randomPoint);
 
-    filterCloud = subSample(cloud);//降采样之后的点云
-    featureDet();
+    std::vector<Eigen::Vector2d> points;
+
+    for(Eigen::Vector3f plane : planeNormals)
+    {
+        for(size t= 0; t<neighbor500->size(); t++)
+        {
+            Eigen::Vector3d point(neighbor500->points[t].x, neighbor500->points[t].y, neighbor500->points[t].z);
+            double distanceToPlane = std::abs((point - neighbor500->points[t].getVector3fMap().dot(plane)));
+            if(distanceToPlane < 0.1 * r)
+            {
+                Eigen::Vector2d projectedPoint;
+                projectedPoint << (point - neighbor500->points[t].getVector3fMap().dot(plane).norm(), point.z());
+                points.push_back(projectedPoint);            
+            }
+        }
+
+
+    }
+
 
 } 
 
 /*
-* 对点云进行降采样，固定分辨率内只有一个点云，并且用一个体素来包裹
+ * 二维空间circle fit
 */
-pcl::VoxelGrid surfaceGen::subSample(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud)
+Circle fitCircle(const std::vector<Eigen::Vector2d> &points)
 {
-    pcl::VoxelGrid<pcl::PointXYZRGBA> voxels;
-    pcl::PCLPointCloud<pcl::PointXYZRGBA>::Ptr cloudFiltered;
-    voxels.setInputCloud(cloud);
-    voxels.setLeafSize(0.1*this.r, 0.1*this.r, 0.1*this.r);
-    voxels.filter(*cloudFiltered);
+    Circle circle;
+    Eigen::MatrixXd A(points.size(), 3);
     
-    //用来显示点云滤波以后结果是否正确
-    // pcl::visualization::PCLVisualizer viewer("voxel_grid_filter");
-    // int v1(1);
-    // int v2(2);
-    // viewer.createViewPort(0, 0, 0.5, 1, v1);
-    // viewer.createViewPort(0.5, 0, 1, 1, v2);
-    // viewer.addPointCloud(cloud, "raw_cloud", v1);
-    // viewer.addPointCloud(cloudFiltered, "cloud_filtered", v2);
+}
 
-    return cloudFiltered;
+/*
+ * 计算点云法线
+*/
+pcl::Normal computePlaneNormal(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
+{
+    pcl::PointXYZRGB centroid;
+    for(const pcl::PointXYZRGB& piont : cloud->points)
+    {
+        centroid.x += point.x;
+        centroid.y += point.y;
+        centroid.z += point.z;
+    }
+
+    centroid.x /= cloud->size();
+    centroid.y /= cloud->size();
+    centroid.z /= cloud->size();
+
+    //Compute the covariance matrix
+    Eigen::Matrix3f covariance_matrix;
+    covariance_matrix.setZero();
+    for(const pcl::PointXYZ& point : cloud->points)
+    {
+        Eigen::Vector3f diff;
+        diff[0] = point.x - centroid.x;
+        diff[1] = point.y - centroid.y;
+        diff[2] = point.z - centroid.z;
+        covariance_matrix += diff * diff.transpose();
+    }
+    covariance_matrix /= cloud->size();
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eigenSolver(covariance_matrix);
+    if(eigenSolver.info() != Eigen::Success)
+    {
+        std::cerr <<"Eigenvalue decomposition failed!" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    Eigen:Vector3d normal = eigenSolver.eigenvectors().col(0);
+
+    pcl::Normal planeNormal;
+    planeNormal.normal_x = normal[0];
+    planeNormal.normal_y = normal[1];
+    planeNormal.normal_z = normal[2];
+    planeNormal.curvature = 0.0;
+
+    return planeNormal;
+
 }
 
 /*
@@ -73,28 +188,39 @@ pcl::VoxelGrid surfaceGen::subSample(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr clo
  * cloud:原始点云 ，参数类型是pcl::PointCloud
 */
 
-map<int, std::vector<int>> surfaceGen::calcNeighorCloud(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud, double radius, int index)
+map<int, std::vector<int>> surfaceGen::calcNeighorCloud(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud, double radius, int q, pcl::PointXYZRGB referencePoint)
 {
-    pcl::search::KdTree<pcl::PointXYZRGBA>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGBA>);
-    tree->setInputCloud(cloud);
-    
-    //map<int, std::vector<int>> neighborClouds;  
-    std::vector<std::vector<int>> neighborClouds;
-    int size = cloud->size();
-    auto& point = cloud->points.at(index);
-    std::vector<int> pointIdxRadiSearch(this.q);
-    std::vector<float> pointRadiSqDis(this.q);
-    if(tree.radiusSearch(point, radius, pointIdxRadiSearch, pointRadiSqDis)>0)
-    {
-        if(tree.radiusSearch.size() > this.q)
-        {
-            vector<int>::iterator iter = pointIdxRadiSearch.begin();
-            *iter+=this.q-1;
-            pointIdxRadiSearch.erase(iter, pointIdxRadiSearch.end());//delete the superfluous point clouds 
+    // pcl::PointXYZRGB referencePoint = cloud->points[index];
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighborClouds(new pcl::PointCloud<pcl::PointXYZRGB>);
 
+    std::vector<pcl::PointXYZRGB> tempPoints;
+    for(const pcl::PointXYZRGB& point : cloud->points)
+    {
+        double distance = pcl::euclideanDistance(referencePoint, point);
+        if(distance < radius)
+        {
+            tempPoints.push_back(point);
         }
-        neighborClouds.push_back(pointIdxRadiSearch);//for existing neighbor clouds, save the index
-    }    
+    }
+
+    if(tempPoints.size() <= q)
+    {
+        neighborCLouds->points = tempPoints;
+        neighborClouds->width  = tempPoints.size();
+        neighborClouds->height = 1;
+        return neighborClouds;
+    }
+
+    int step = tempPoints.size() / q;
+    int index = 0;
+    for(int i=0; i<q; i++)
+    {
+        neighborClouds->push_back(tempPoints[index]);
+        index += step;
+    }
+
+    neighborClouds->width = q;
+    neighborClouds->height = 1;
 
     return neighborClouds;
 }
@@ -110,7 +236,7 @@ map<int, std::vector<int>> surfaceGen::calcNeighorCloud(std::vector<pcl::PointXY
     pcl::PointCloud<pcl::PointXYZRGBA> cloud;
     for(int i=0; i<cloudVector.size(); i++)
     {   
-        pcl::PointXYXRGBA point = cloudVector[i];
+        pcl::PointXYZRGBA point = cloudVector[i];
         cloud.push_back(point);
     }
     pcl::search::KdTree<pcl::PointXYZRGBA>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGBA>);
