@@ -148,6 +148,13 @@ pcl::PointXYZRGB findSeed(pcl::PointCloud::Ptr& cloud, FeatureResult feature)
     int gamma = 0;
     double radius = r;
 
+    while(tau <= r)
+    {
+        while(gamma <= radiSet.size() - 1)
+        {
+            int randomIndex = rand() % cloud->
+        }
+    }
     //随机生成一个点
     pcl::common::UniformGenerator<int> indexGenerator(0, downsampledCloud->size()-1);
     int randomIndex = indexGenerator.run(0);
@@ -261,6 +268,10 @@ FeatureResult fitCircle(const std::vector<Eigen::Vector2d> &points)
 
     return circle;
 }
+
+/*
+ * 计算平面法线 
+*/
 
 /*
  * 计算点云法线
