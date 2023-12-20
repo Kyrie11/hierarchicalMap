@@ -9,6 +9,7 @@
 #include<cmath>
 #include<vector>
 #include<set>
+#include<limits>
 
 #include<Eigen/Eigenvalues>
 
@@ -26,13 +27,7 @@ int main(int argc, char** argv)
     ros::Subscriber pointCloudSub = nh.subscribe("/camera/pointcloud", 10, &this::segmentation);
 }
 
-struct FeatureResult
-{
-    double curvature;
-    Eigen::Vector2d center;
-    double fitErrorMean;
-    double fitErrorStddev;
-}
+
 
 /*
 * segement the point cloud to different parts
@@ -103,6 +98,12 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
 
     std::vector<Eigen::Vector2d> points;
 
+    Eigen:Vector3d maxPlane(0.0, 0.0, 0.0);
+    Eigen::Vector3d perpendicularPlane(0.0, 0.0, 0.0);
+
+    FeatureResult maxPlaneFeature, minPlaneFeature;
+    maxPlaneFeature.curvature = (double)std::numeric_limits<int>::min();//记录拥有最大curvature的平面  和 与之垂直的平面
+    //离平面距离小于0.1*r的所有点构成平面，再进行circle fitting
     for(Eigen::Vector3f plane : planeNormals)
     {
         for(size t= 0; t<neighbor500->size(); t++)
@@ -116,21 +117,149 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
                 points.push_back(projectedPoint);            
             }
         }
-
-
+        
+        FeatureResult feature;
+        feature = fitCircle(points);
+        if(feature.curvature > maxPlaneFeature.curvature){
+            maxPlaneFeature.curvature = feature.curvature;
+            maxPlane = plane;
+        }
+        points.clear();//每次清空放下一个平面的点
     }
 
-
+    //计算最终的surface normal
+    Eigen::Vector3d diff;
+    diff[0] = randomPoint.x - (maxPlaneFeature.center[0]+minPlaneFeature.center[1])/2;
+    diff[1] = randomPoint.y - (maxPlaneFeature.center[1]+minPlaneFeature.center[1])/2;
+    diff[2] = randomPoint.z;
+    
+    normal.normal_x = diff.normalized()[0];
+    normal.normal_y = diff.normalized()[1];
+    normal.normal_z = diff.normalized()[2];
 } 
 
 /*
+ * 寻找种子点，对种子点进行扩充从而形成一个segment
+*/
+pcl::PointXYZRGB findSeed(pcl::PointCloud::Ptr& cloud, FeatureResult feature)
+{
+    std::vector<double> radiSet = {r, 0.72*r, 0.52*r, 0.37*r, 0.27*r, 0.2*r};
+    double tau = 0.01 * r; //代表表面roughness
+    int gamma = 0;
+    double radius = r;
+
+    //随机生成一个点
+    pcl::common::UniformGenerator<int> indexGenerator(0, downsampledCloud->size()-1);
+    int randomIndex = indexGenerator.run(0);
+    pcl::PointXYZRGB randomPoint = downsampledCloud->points[randomIndex];
+
+    //计算附近点云组成的平面的法线
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor50 = calcNeighborCloud(downsampledCloud, r, 50, randomPoint);
+    pcl::Normal normal = computePlaneNormal(neighbor50);
+
+
+    std::vector<Eigen::Vector3f> planeNormals;
+    int m = 40;
+
+    float angleInterval = 2 * M_PI / m;
+
+    Eigen::Vector3f orthogonalVec1;
+    if(std::abs(normal.x()) < std::abs(normal.y()))
+        orthogonalVec1 << 0, -normal.z(), normal.y();
+    else
+        orthogonalVec1 << -normal.z(), 0, normal.x();
+    
+    orthogonalVec1.normalize();
+
+    Eigen::Vector3f orthogonalVec2 = normal.cross(orthogonalVec1);
+    orthogonalVec2.normalize();
+
+    Eigen::Matrix3f rotationMatrix;
+    rotationMatrix << normal, orthogonalVec1, orthogonalVec2;
+
+    for(int i=0; i<m; i++)
+    {
+        Eigen::Vector3f rotatedNormal = rotationMatrix * normal;
+        rotatedNormal.normalize();
+
+        planeNormals.push_back(rotatedNormal);
+
+        rotationMatrix = Eigen::AngleAxisf(angleInterval, normal) * rotationMatrix;
+    }
+
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor500 = calcNeighborCloud(downsampledCloud, r, 50, randomPoint);
+
+    std::vector<Eigen::Vector2d> points;
+
+    Eigen:Vector3d maxPlane(0.0, 0.0, 0.0);
+    Eigen::Vector3d perpendicularPlane(0.0, 0.0, 0.0);
+
+    FeatureResult maxPlaneFeature, minPlaneFeature;
+    maxPlaneFeature.curvature = (double)std::numeric_limits<int>::min();//记录拥有最大curvature的平面  和 与之垂直的平面
+    //离平面距离小于0.1*r的所有点构成平面，再进行circle fitting
+    for(Eigen::Vector3f plane : planeNormals)
+    {
+        for(size t= 0; t<neighbor500->size(); t++)
+        {
+            Eigen::Vector3d point(neighbor500->points[t].x, neighbor500->points[t].y, neighbor500->points[t].z);
+            double distanceToPlane = std::abs((point - neighbor500->points[t].getVector3fMap().dot(plane)));
+            if(distanceToPlane < 0.1 * r)
+            {
+                Eigen::Vector2d projectedPoint;
+                projectedPoint << (point - neighbor500->points[t].getVector3fMap().dot(plane).norm(), point.z());
+                points.push_back(projectedPoint);            
+            }
+        }
+        
+        FeatureResult feature;
+        feature = fitCircle(points);
+        if(feature.curvature > maxPlaneFeature.curvature){
+            maxPlaneFeature.curvature = feature.curvature;
+            maxPlane = plane;
+        }
+        points.clear();//每次清空放下一个平面的点
+    }
+
+    
+}
+
+struct FeatureResult
+{
+    double curvature;
+    Eigen::Vector2d center;
+    double meanFitError;
+    double stdFitError;
+}
+/*
  * 二维空间circle fit
 */
-Circle fitCircle(const std::vector<Eigen::Vector2d> &points)
+FeatureResult fitCircle(const std::vector<Eigen::Vector2d> &points)
 {
-    Circle circle;
+    FeatureResult circle;
     Eigen::MatrixXd A(points.size(), 3);
+    Eigen::VectorXd b(points.size());
+
+    for(size_t i=0; i < points.size(); i++)
+    {
+        A(i, 0) = 2 * points[i](0);
+        A(i, 1) = 2 * points[i](1);
+        A(i, 2) = -1;
+        b(i) = points[i].squaredNorm();
+    }
+
+    Eigen::VectorXd x = A.colPivHouseholderQr().solve(b);
+    circle.center << x(0), x(1);
+    circle.curvature = std::sqrt(x(0) * x(0) + x(1) * x(1) - x(2));
+
+    Eigen::VectorXd distances(points.size());
+    for(size_t i=0; i<points.size(0); i++) {
+        distances(i) = (points[i] - circle.center).norm() - circle.curvature;
+    }
     
+    circle.meanFitError = distances.mean();
+    circle.stdFitError = distances.array().abs().matrix().mean();
+
+    return circle;
 }
 
 /*
