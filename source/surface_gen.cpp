@@ -38,6 +38,8 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
     pcl::fromROSMsg(*inCLoud, *cloud);
 
+    //存储划分后的不同segment
+    std::vector<std::vector<pcl::PointXYZRGB>> segments;
 
     // pcl::fromROSMsg(*inCloud, *cloud); 当数据量过大时，这种方式比较耗时
     // 通过直接复制数据地址的方式来进行数据类型转换
@@ -51,9 +53,82 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
     voxel_grid.setInputCloud(cloud);
     voxel_grid.setLeafSize(0.1 * r, 0.1 * r, 0.1 * r);
 
-    //点云降采样
+    //点云降采样  PREPROCESS({P}, r)
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr downsampledCloud(new pcl::PointCloud<pcl::PointXYZRGB>);
     voxel_grid.filter(*downsampledCloud);
+
+    //寻找seedPoint
+    FeatureResult* seedFeature;
+    pcl::PointXYZRGB seedPoint = findSeed(downSampmledCloud, seedFeature);
+    while(seedPoint != nullptr)
+    {
+        std::vector<pcl::PointXYZRGB> currRegion;
+        std::vector<pcl::PointXYZRGB> candidates;
+        currRegion.push_back(seedPoint);
+        FeatureResult estimatedFeature = *seedFeature;
+        double uRc = estimatedFeature.avgDis;
+        double tRc = estimatedFeature.stdDis;
+
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighborPoints = findNeighbor(downsampledCloud, seedPoint, r, 500);
+        for(std::size_t i=0; i<neighborPoints->size(); i++)
+        {
+            candidates.push_back((*neighborPoints)[i]);
+        }
+
+        double Fc;
+        while(candidates.size() != 0)
+        {
+            auto pointIt = candidates.begin();
+            while(pointIt != candidates.end)
+            {
+                pcl::PointXYZRGB localPoint = *pointIt;
+                pcl::PointCloud<pcl::PointXYZRGB>::Ptr localCloud = findNeighbor(downsampledCloud, localPoint, r, 500);
+                FeatureResult localFeature = fitCircle(localCloud);
+                if(localFeature.avgDis <= uRc + 2 * tRc)
+                {
+                    currRegion.push_back(localPoint)
+                    for(size_t i=0; i<localCloud->size(); i++)
+                        candidates.push_back((*localCloud)[i]);
+                }
+                else
+                    Fc = fitCircle(candidates);
+                
+                if(localFeature.stdDis <= uRc + 2 * tRc)
+                {
+                    currRegion.push_back(*pointIt);
+                    for(size_t i=0; i<localCloud->size(); i++)
+                        candidates.push_back((*localCloud)[i]);
+                }
+                pointIt = candidates.erase(pointIt);
+            }
+        }
+
+        double uRcSum = 0;
+        double tRcSum = 0;
+
+        std::vector<int> indices;
+
+        for(size_t i=0; i<currRegion.size(); i++)
+        {
+            pcl::PointXYZRGB localPoint = currRegion[i];
+            pcl::PointCloud<pcl::PointXYZRGB> localCloud = findNeighbor(downsampledCloud, localPoint, r, 500);
+            FeatureResult localFeature = fitCircle(localCloud);
+            uRcSum += localFeature.avgDis; 
+            tRcSum += localFeature.stdDis;
+
+            int index = downsampledCloud->findNearestPoint(localPoint);
+            if(index != -1)
+                indices.push_back(index);
+        }
+
+        downsampledCloud->erase(indices);
+
+        uRc = uRcSum/currRegion.size();
+        tRc = tRcSum/currRegion.size();
+
+
+        seedPoint = findSeed(downSampmledCloud, seedFeature);
+    }
 
     //随机生成一个点
     pcl::common::UniformGenerator<int> indexGenerator(0, downsampledCloud->size()-1);
@@ -137,97 +212,118 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr[] surfaceGen::segmentation(sensor_msgs::
     normal.normal_y = diff.normalized()[1];
     normal.normal_z = diff.normalized()[2];
 } 
+/*
+ * 寻找邻域点
+*/
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr findNeighbor(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, pcl::PointXYZRGB& point, double radius, std::size_t maxPoints)
+{
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighborPoints(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+    kdtree.setInputCloud(cloud);
+
+    std::vector<int> pointIndices;
+    std::vector<float> pointDistances;
+    kdtree.radiusSearch(point, radius, pointIndices, pointDistances);
+
+    std::size_t count = 0;
+    for(std::size_t i=0; i<pointIndices.size() && count < maxPoints; i++)
+    {
+        pcl::PointXYZRGB neighborPoint = (*cloud)[pointIndices[i]];
+        neighborPoints->push_back(neighborPoint);
+        count++;
+    }   
+    return neighborPoints;
+}
 
 /*
  * 寻找种子点，对种子点进行扩充从而形成一个segment
 */
-pcl::PointXYZRGB findSeed(pcl::PointCloud::Ptr& cloud, FeatureResult feature)
+pcl::PointXYZRGB findSeed(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, FeatureResult* seedFeature)
 {
     std::vector<double> radiSet = {r, 0.72*r, 0.52*r, 0.37*r, 0.27*r, 0.2*r};
     double tau = 0.01 * r; //代表表面roughness
     int gamma = 0;
     double radius = r;
 
+    pcl::PointXYZRGB seedPoint;
+    
     while(tau <= r)
     {
         while(gamma <= radiSet.size() - 1)
         {
-            int randomIndex = rand() % cloud->
-        }
-    }
-    //随机生成一个点
-    pcl::common::UniformGenerator<int> indexGenerator(0, downsampledCloud->size()-1);
-    int randomIndex = indexGenerator.run(0);
-    pcl::PointXYZRGB randomPoint = downsampledCloud->points[randomIndex];
+            int randomIndex = rand() % cloud->size();
+            seedPoint = (*cloud)[randomIndex];
 
-    //计算附近点云组成的平面的法线
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor50 = calcNeighborCloud(downsampledCloud, r, 50, randomPoint);
-    pcl::Normal normal = computePlaneNormal(neighbor50);
+            //计算附近点云组成的平面的法线
+            pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor50 = calcNeighborCloud(downsampledCloud, r, 50, seedPoint);
+            pcl::Normal normal = computePlaneNormal(neighbor50);
 
+            std::vector<Eigen::Vector3f> planeNormals;
+            int m = 40;
 
-    std::vector<Eigen::Vector3f> planeNormals;
-    int m = 40;
+            float angleInterval = 2 * M_PI / m;
 
-    float angleInterval = 2 * M_PI / m;
-
-    Eigen::Vector3f orthogonalVec1;
-    if(std::abs(normal.x()) < std::abs(normal.y()))
-        orthogonalVec1 << 0, -normal.z(), normal.y();
-    else
-        orthogonalVec1 << -normal.z(), 0, normal.x();
+            Eigen::Vector3f orthogonalVec1;
+            if(std::abs(normal.x()) < std::abs(normal.y()))
+                orthogonalVec1 << 0, -normal.z(), normal.y();
+            else
+                orthogonalVec1 << -normal.z(), 0, normal.x();
     
-    orthogonalVec1.normalize();
+            orthogonalVec1.normalize();
 
-    Eigen::Vector3f orthogonalVec2 = normal.cross(orthogonalVec1);
-    orthogonalVec2.normalize();
+            Eigen::Vector3f orthogonalVec2 = normal.cross(orthogonalVec1);
+            orthogonalVec2.normalize();
 
-    Eigen::Matrix3f rotationMatrix;
-    rotationMatrix << normal, orthogonalVec1, orthogonalVec2;
+            Eigen::Matrix3f rotationMatrix;
+            rotationMatrix << normal, orthogonalVec1, orthogonalVec2;
 
-    for(int i=0; i<m; i++)
-    {
-        Eigen::Vector3f rotatedNormal = rotationMatrix * normal;
-        rotatedNormal.normalize();
-
-        planeNormals.push_back(rotatedNormal);
-
-        rotationMatrix = Eigen::AngleAxisf(angleInterval, normal) * rotationMatrix;
-    }
-
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor500 = calcNeighborCloud(downsampledCloud, r, 50, randomPoint);
-
-    std::vector<Eigen::Vector2d> points;
-
-    Eigen:Vector3d maxPlane(0.0, 0.0, 0.0);
-    Eigen::Vector3d perpendicularPlane(0.0, 0.0, 0.0);
-
-    FeatureResult maxPlaneFeature, minPlaneFeature;
-    maxPlaneFeature.curvature = (double)std::numeric_limits<int>::min();//记录拥有最大curvature的平面  和 与之垂直的平面
-    //离平面距离小于0.1*r的所有点构成平面，再进行circle fitting
-    for(Eigen::Vector3f plane : planeNormals)
-    {
-        for(size t= 0; t<neighbor500->size(); t++)
-        {
-            Eigen::Vector3d point(neighbor500->points[t].x, neighbor500->points[t].y, neighbor500->points[t].z);
-            double distanceToPlane = std::abs((point - neighbor500->points[t].getVector3fMap().dot(plane)));
-            if(distanceToPlane < 0.1 * r)
+            for(int i=0; i<m; i++)
             {
-                Eigen::Vector2d projectedPoint;
-                projectedPoint << (point - neighbor500->points[t].getVector3fMap().dot(plane).norm(), point.z());
-                points.push_back(projectedPoint);            
-            }
-        }
-        
-        FeatureResult feature;
-        feature = fitCircle(points);
-        if(feature.curvature > maxPlaneFeature.curvature){
-            maxPlaneFeature.curvature = feature.curvature;
-            maxPlane = plane;
-        }
-        points.clear();//每次清空放下一个平面的点
-    }
+                Eigen::Vector3f rotatedNormal = rotationMatrix * normal;
+                rotatedNormal.normalize();
 
-    
+                planeNormals.push_back(rotatedNormal);
+
+                rotationMatrix = Eigen::AngleAxisf(angleInterval, normal) * rotationMatrix;
+            }
+
+            pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor500 = calcNeighborCloud(downsampledCloud, r, 50, seedPoint);
+
+            std::vector<Eigen::Vector2d> points; 
+
+            FeatureResult minPlaneFeature;
+            minPlaneFeature.curvature = (double)std::numeric_limits<int>::max();//记录拥有最小curvature的平面
+            //离平面距离小于0.1*r的所有点构成平面，再进行circle fitting
+            for(Eigen::Vector3f plane : planeNormals)
+            {
+                for(size t= 0; t<neighbor500->size(); t++)
+                {
+                    Eigen::Vector3d point(neighbor500->points[t].x, neighbor500->points[t].y, neighbor500->points[t].z);
+                    double distanceToPlane = std::abs((point - neighbor500->points[t].getVector3fMap().dot(plane)));
+                    if(distanceToPlane < 0.1 * r)
+                    {
+                        Eigen::Vector2d projectedPoint;
+                        projectedPoint << (point - neighbor500->points[t].getVector3fMap().dot(plane).norm(), point.z());
+                        points.push_back(projectedPoint);            
+                    }
+                }
+                
+                FeatureResult feature;
+                feature = fitCircle(points);
+                //寻找最小curvature
+                if(feature.curvature < tau){
+                    *seedFeature = feature;
+                    return seedPoint;
+                }
+                points.clear();//每次清空放下一个平面的点
+            }
+            gamma++;
+        }
+       tau *= 2;
+       gamma = 0;
+    }
+    return nullptr; 
 }
 
 struct FeatureResult
@@ -268,10 +364,6 @@ FeatureResult fitCircle(const std::vector<Eigen::Vector2d> &points)
 
     return circle;
 }
-
-/*
- * 计算平面法线 
-*/
 
 /*
  * 计算点云法线
@@ -404,88 +496,12 @@ map<int, std::vector<int>> surfaceGen::calcNeighorCloud(std::vector<pcl::PointXY
 }
 
 /*
-* multi scale feature detection
+ * segment growth
 */
-void surfaceGen::featureDet(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr rawCloud, map<int, std::vector<int>> neighborClouds)
+std::vector<pcl::PointXYRGBA> segmentGrow(pcl::PointXYZRGB seedPoint, std::vector<pcl::PointXYZRGB> neighborCloud)
 {
-    map<int, std::vector<int>> neighborClouds =  calcNeighborCloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
-    
-    //计算点pi附近q个最近点云
-    for(auto [index, cloud] : neighborClouds)
-    {
-        Eigen::Vector3d surfNormal = surfNormal(cloud);
-        pcl::PointXYZRGBA point = rawCloud->points.at(index);
-        double normalLength = sqrt(surfNormal[0]*surfNormal[0] + surfNormal[1]+surfNormal[1] + surfNormal[2]*surfNormal[2]);
-        surfNormal[0] /= normalLength;
-        surfNormal[1] /= normalLength;
-        surfNormal[2] /= normalLength;
-        
-        double maxCurvature = 0;
-        int index = 0;
-        double totalFeature[numOfPlanes][3];
-        std::vector<Eigen::vector3d> initPlane = new std::vector<Eigen::Vector3d>(-surfNormal[2], surfNormal[2], surfNormal[0]-surfNormal[1]); // planes evenly distributed around the normal line
-        int unit = 360/this.numOfPlanes;
-        for(int i=0;i<numOfPlanes;i++){
-            int theta = unit * i;
-            std::vector<Eigen::vector3d> plane;
-            double rad = theta * M_PI / 180.0;
-            double cosA = cos(rad);
-            double sinA = sin(rad);
-            
-            double u = surfNormal[0];
-            double v = surfNormal[1];
-            double w = surfNormal[2];
-            double cosT = cosA;
-            double sinT = sinA;
-            double oneMinusCosT = 1.0 - cosT;
-            double rotMat[3][3];
-            rotMat[0][0] = u*u + (1-u*u)*cosT;
-            rotMat[0][1] = u*v*(oneMinusCosT) - w*sinT;
-            rotMat[0][2] = u*w*(oneMinusCosT) + v*sinT;
-            rotMat[1][0] = u*v*(oneMinusCosT) + w*sinT;
-            rotMat[1][1] = v*v + (1-v*v)*cosT;
-            rotMat[1][2] = v*w*(oneMinusCosT) - u*sinT;
-            rotMat[2][0] = u*w*(oneMinusCosT) - v*sinT;
-            rotMat[2][1] = v*w*(oneMinusCosT) + u*sinT;
-            rotMat[2][2] = w*w + (1-w*w)*cosT;
+    std::vector<pcl::PointXYZRGB> candidates, regionPoints;
 
-            vector<double> result(3);
-            result[0] = rotMat[0][0]*v[0] + rotMat[0][1]*v[1] + rotMat[0][2]*v[2];
-            result[1] = rotMat[1][0]*v[0] + rotMat[1][1]*v[1] + rotMat[1][2]*v[2];
-            result[2] = rotMat[2][0]*v[0] + rotMat[2][1]*v[1] + rotMat[2][2]*v[2];
-
-
-            //以下是求所有在平面附近距离小于0.1r的点的集合
-            double D = -(result[0]*point.x + result[1]*point.y + result[2]*point.z);
-            pcl::PCLPointCloud<pcl::PointXYZRGBA> tempCloud;
-            for(auto [i, p] : neighborClouds)
-            {
-                pcl::PointXYZRGBA neighborPoint;
-                
-                double numerator = std::abs(result[0]*neighborPoint.x + result[1]*neighborPoint.y + result[2]*neighborPoint.z);
-                double distance = numerator / denominator;
-                if(distance <= 0.1*r){
-                    tempCloud.push_back(point);
-                }
-                double[] feature = calcCurvatureCenter(tempCloud);
-                totalFeature[i] = feature;
-                
-                //to store the max curvature
-                if(abs(feature[0]) > maxCurvature)
-                {   
-                    index = i;
-                    maxCurvature = abs(feature[0]);
-                }
-            }
-        }
-
-        int supplyIndex = abs(90 - index * unit) / unit;
-        minCurvature = totalFeature[supplyIndex];
-
-        double halfSum = (maxCurvature + minCurvature) / 2;
-        
-    }
-    
 }
 
 /*
