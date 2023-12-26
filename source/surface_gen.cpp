@@ -5,6 +5,7 @@
 #include<pcl/point_cloud.h>
 #include<pcl/point_types.h>
 #include<pcl/filters/voxel_grid.h>
+#include<pcl/kdtree/kdtree_flann.h>
 
 #include<cmath>
 #include<vector>
@@ -30,15 +31,21 @@ int main(int argc, char** argv)
     ros::NodeHandle nh;
     
     ros::Subscriber pointCloudSub = nh.subscribe("/camera/pointcloud", 10, &segmentation);
+
 }
 
-
+struct Edge
+{
+    int source;
+    int target;
+    double weight;
+};
 
 /*
 * segement the point cloud to different parts
 * the first step is to segment several point cloud segmentations
 */
-void  surfaceGen::segmentation(sensor_msgs::PointCloud2ConstPtr& inCloud)
+void  segmentation(sensor_msgs::PointCloud2ConstPtr& inCloud)
 {
     segments.clear();
 
@@ -160,6 +167,45 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr findNeighbor(pcl::PointCloud<pcl::PointXY
 }
 
 /*
+ *计算
+*/
+std::vector<Eigen::Vector3d> computeRotatedNormals(pcl::PointXYZ seedPoint, pcl::PointCloud<pcl::PointXYZ> cloud)
+{
+    //计算附近点云组成的平面的法线
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor50 = calcNeighborCloud(cloud, r, 50, seedPoint);
+    pcl::Normal normal = computePlaneNormal(neighbor50);
+
+    std::vector<Eigen::Vector3f> planeNormals;
+    int m = 40;
+
+    float angleInterval = 2 * M_PI / m;
+
+    Eigen::Vector3f orthogonalVec1;
+    if(std::abs(normal.x()) < std::abs(normal.y()))
+        orthogonalVec1 << 0, -normal.z(), normal.y();
+    else
+        orthogonalVec1 << -normal.z(), 0, normal.x();
+    
+    orthogonalVec1.normalize();
+
+    Eigen::Vector3f orthogonalVec2 = normal.cross(orthogonalVec1);
+    orthogonalVec2.normalize();
+
+    Eigen::Matrix3f rotationMatrix;
+    rotationMatrix << normal, orthogonalVec1, orthogonalVec2;
+
+    for(int i=0; i<m; i++)
+    {
+        Eigen::Vector3f rotatedNormal = rotationMatrix * normal;
+        rotatedNormal.normalize();
+
+        planeNormals.push_back(rotatedNormal);
+
+        rotationMatrix = Eigen::AngleAxisf(angleInterval, normal) * rotationMatrix;
+    }
+    return planeNormals;
+}
+/*
  * 寻找种子点，对种子点进行扩充从而形成一个segment
 */
 pcl::PointXYZRGB findSeed(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, FeatureResult* seedFeature)
@@ -184,34 +230,7 @@ pcl::PointXYZRGB findSeed(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, Feature
             pcl::Normal normal = computePlaneNormal(neighbor50);
 
             std::vector<Eigen::Vector3f> planeNormals;
-            int m = 40;
-
-            float angleInterval = 2 * M_PI / m;
-
-            Eigen::Vector3f orthogonalVec1;
-            if(std::abs(normal.x()) < std::abs(normal.y()))
-                orthogonalVec1 << 0, -normal.z(), normal.y();
-            else
-                orthogonalVec1 << -normal.z(), 0, normal.x();
-    
-            orthogonalVec1.normalize();
-
-            Eigen::Vector3f orthogonalVec2 = normal.cross(orthogonalVec1);
-            orthogonalVec2.normalize();
-
-            Eigen::Matrix3f rotationMatrix;
-            rotationMatrix << normal, orthogonalVec1, orthogonalVec2;
-
-            for(int i=0; i<m; i++)
-            {
-                Eigen::Vector3f rotatedNormal = rotationMatrix * normal;
-                rotatedNormal.normalize();
-
-                planeNormals.push_back(rotatedNormal);
-
-                rotationMatrix = Eigen::AngleAxisf(angleInterval, normal) * rotationMatrix;
-            }
-
+            planeNormals = computeRotatedNormals(seedPoint, cloud);
             pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor500 = calcNeighborCloud(downsampledCloud, radius, 500, seedPoint);
 
             std::vector<Eigen::Vector2d> points; 
@@ -290,7 +309,7 @@ FeatureResult fitCircle(const std::vector<Eigen::Vector2d> &points)
 }
 
 /*
- * 计算点云法线
+ * 计算一堆点云的法线
 */
 pcl::Normal computePlaneNormal(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
@@ -338,6 +357,103 @@ pcl::Normal computePlaneNormal(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 
 }
 
+/*
+ * 文中定义的能量函数
+*/
+double EnergyFunction(Eigen::Vector3d plane, pcl::PointXYZ planePoint, pcl::PointCloud<pcl::PointXYZ> cloud)
+{
+    double posDenominator, posNumerator = 0;//表示正距离的点
+    double negDenominator, negNumerator = 0;//表示负距离的点
+    int negPoints, posPoints = 0;//记录满足的点
+    for(int i=0; i<cloud.size(); i++)
+    {
+        pcl::PointXYZ point = cloud[i];
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr neighbor50 = calcNeighborCloud(cloud, r, 50, point);
+        pcl::Normal normal = computePlaneNormal(neighbor50);
+        
+        double distance = (plane.x() * point.x + plane.y() * point.y + plane.z() * point.z - 
+                plane.x() * planePoint.x - plane.y() * planePoint.y - plane.z() * planePoint.z) / 
+                std::sqrt(plane.x()*plane.x() + plane.y()*plane.y() + plane.z()*plane.z());
+
+        if(std::abs(distance)<=r)
+        {
+            double numerator = (1 - std::abs(plane.x()*normal.normal_x + plane.y()*normal.normal_y + plane.z()*normal.normal_z))
+                        * std::exp(-3*r*distance*distance);
+            double denominator = std::exp(-3*r*distance*distance);
+            if(distance<0)
+            {
+                negPoints++;
+                negDenominator += denominator;
+                negNumerator += numerator;
+            }
+            else
+            {
+                posPoints++;
+                posDenominator += denominator;
+                posNumerator += numerator;
+            }
+        }
+    }
+
+    double posScore = posNumerator / posDenominator;
+    double negScore = negNumerator / negDenominator;
+    if(negPoints >= 50 && posPoints >= 50)
+    {
+        return min(posScore, negScore);
+    }
+    else if(negPoints >= 50)
+        return negScore;
+    else if(posPoints >= 50)
+        return posScore;
+    else
+        return nullptr;
+}
+/*
+ * 使用nurbs对不同segment进行fit
+*/
+typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
+std::vector<Eigen::Vector3d> nurbsFitting()
+{
+    for(std::vector<pcl::PointXYZ> segment : segments)
+    {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
+        cloud->points = segment;
+        pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+        kdtree.setInputCloud(cloud);
+
+        //initialization
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> dist(0, segment.size()-1);
+        int random_index = dist(gen);
+        pcl::PointXYZ seedPoint = segment[random_index];
+
+        std::vector<Eigen::Vector3d> planeNormals = computeRotatedNormals(seedPoint, cloud);
+
+        Eigen::Vector3d bestPlane(0,0,0);
+        double maxEnergy = (double)std::numeric_limits<int>::min();
+        for(Eigen::Vector3d plane : planeNormals)
+        {
+            double energy = EnergyFunction(plane, seedPoint, cloud);
+            if(energy != nullptr && energy > maxEnergy)
+            {
+                bestPlane = plane;
+                maxEnergy = energy;
+            }
+        }
+
+        if(maxEnergy == (double)std::numeric_limits<int>::min()) //no cs found
+            return;
+
+        
+    }
+}
+
+
+std::vector<int> sortPointsByAngle()
+{
+
+}
 
 /*
  * calculate rational basis function
