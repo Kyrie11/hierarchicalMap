@@ -445,14 +445,18 @@ std::vector<Eigen::Vector3d> nurbsFitting()
         if(maxEnergy == (double)std::numeric_limits<int>::min()) //no cs found
             return;
 
-        
+        //将点云投影到选择的二维平面然后b-spline fitting
+
     }
 }
 
-
-std::vector<int> sortPointsByAngle()
+double computePointScore(const pcl::PointCloud& point, const std::vector<pcl::PointXYZ>& neighbors, const Eigen::Vector3d& normal)
 {
-
+    double score = 0.0;
+    for(const auto& neighbor : neighbors)
+    {
+        Eigen::Vector3d v1 = point.
+    }
 }
 
 /*
